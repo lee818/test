@@ -1,396 +1,480 @@
-import random
+#!/usr/bin/env python
+
 import numpy as nm
+import random as rnd
+import itertools as its
 import networkx as nx
-import scipy.stats.stats as stats
-import scipy.sparse.csgraph as csg
-import community
+import scipy.linalg as linalg
+import random
+import matplotlib.pyplot as plt
+import scipy.stats as stats
+import sys
+import math
+import ssum
+import graph_utils as gu
 
 
-def get_joint_degrees(A):
-    joint_degrees = {}
+__eigen_debug = False
+__eigen_info = False
 
-    n = nm.shape(A)[0]
-    u = nm.ones((1, n))
-    N = nm.ravel(u*A)
-    for i in N:
-        joint_degrees[int(i)] = {}
-
-    B = A*nm.diag(N)
-    for i in range(n):
-        for j in range(n):
-            if B[i, j]:
-                if B[j, i] in joint_degrees[B[i, j]]:
-                    joint_degrees[int(B[i, j])][int(B[j, i])] += 1
-                else:
-                    joint_degrees[int(B[i, j])][int(B[j, i])] = 1
-            j += 1
-        i += 1
-    return joint_degrees
+scaling_fun = gu.truncate
 
 
-def is_connected(A):
-    n = nm.shape(A)[0]
-    u = nm.zeros((n, 1))
-    u[0, 0] = 1
-    connected = True
+def debug(s):
+    if __eigen_debug:
+        print "[DEBUG] " + str(s)
+    return 0
 
-    for i in range(n + 1):
-        u = u + A * u
-        u /= nm.sum(u)
+
+def info(s):
+    if __eigen_info:
+        print "[INFO] " + str(s)
+    return 0
+
+
+def vec_dist(x, y):
+    return (nm.linalg.norm(nm.sort(nm.ravel(x)) - nm.sort(nm.ravel(y))))
+
+
+def leading_eigenvector(A, eps=0.000001, maxiter=float("inf")):
+    n = A.shape[0]
+    # m = 0.15  # Google magic number
+    # S = nm.ones((n, n))
+    # A = S * m + A * (1 - m)
+    x0 = nm.random.random((n, 1))
+    x0 = x0 / nm.linalg.norm(x0)
 
     i = 0
-    while (i < n and connected):
-        if u[i, 0] == 0:
-            connected = False
+    x1 = A * x0
+    l = nm.linalg.norm(x1)
+    x1 = x1 / l
+    while (nm.linalg.norm(x0-x1) > eps) and i < maxiter:
+        x0 = x1
+        x1 = A * x0
+        l = float((nm.transpose(x1)*x0) / (nm.transpose(x0)*x0))
+        x1 = x1 / l
+        x1 /= nm.linalg.norm(x1)
         i += 1
+        # print str(x1) + " " + str(l) + " " +\
+        #     str(nm.linalg.norm(nm.ravel(x0)-nm.ravel(x1)))
 
-    return connected
+    if x1[0] < 0:  # canonical (crappy) form
+        x1 *= -1
 
-
-def average_clustering(A):
-    n = nm.shape(A)[0]
-    neighs = A*nm.ones((n, 1))
-    c = 0.0
-    tris = A**3
-    for i in range(n):
-        if neighs[i] > 1:
-            c += float(tris[i, i]/(neighs[i] * (neighs[i] - 1)))
-    return c/n
+    return x1, float(l)
 
 
-def clustering(A):
-    n = nm.shape(A)[0]
-    neighs = A*nm.ones((n, 1))
-    c = {}
-    tris = A**3
-    for i in range(n):
-        if neighs[i] > 1:
-            c[i] = float(tris[i, i]/(neighs[i] * (neighs[i] - 1)))
-    return c
+def eigen_centrality(A, eps=0.000001, maxiter=float("inf")):
+    x, l = leading_eigenvector(A, eps, maxiter)
+    s = sum(x)
+    x = x / s
+    return x, l
 
 
-def average_clustering_old(A):
-    n = nm.shape(A)[0]
-    C = []
-    for i in range(n):
-        neig = []
-        tris = 0
-        for j in range(n):
-            if A[j, i] != 0:
-                for k in neig:
-                    if A[k, j] != 0:
-                        tris += 1
-                neig.append(j)
-        if len(neig) > 1:
-            C.append(2.0*tris/(len(neig)*(len(neig)-1)))
-
-    if len(C):
-        return sum(C)/n
-    else:
-        return 0
-
-
-def get_degrees(A):
-    u = nm.ones((1, nm.shape(A)[0]))
-    a=nm.ravel(u*A)
-    variance=nm.var(a)
-    print "*********variance**********"
-    print (str(variance))
-    return nm.sort(nm.ravel(u*A))
-
-
-def num_edges(A):
-    return sum(get_degrees(A))/2
-
-
-def get_avg_neighbour_degree(A):
-    degs = get_joint_degrees(A)
-    n = int(max(degs))
-
-    annd = {}  # nm.ravel(nm.zeros((1, n)))
-    for k in range(1, n + 1):
-        if k in degs:
-            annd[k] = sum([v*k for v in degs[k].values()]) /\
-                sum(degs[k].values())
-    return annd
-
-
-def get_common_neigh_dist(A):
-    cnd = {}
-    n = nm.shape(A)[0]
+def truncate_vector(x, precision):
+    n = x.shape[0]
+    j = 0
+    while ((10**j) * precision) < 1:
+        j += 1
 
     for i in range(n):
-        for j in range(i + 1, n):
-            if A[i, j] != 0:
-                v = float(nm.transpose(A[:, i]) * (A[:, j]))
-                if v > 0:
-                    if v in cnd:
-                        cnd[v] += 1
-                    else:
-                        cnd[v] = 1.
-    for m in cnd:
-        cnd[m] /= n * (n - 1) / 2.
-    return cnd
+        x[i] = round(x[i], j)
 
-
-def get_kcoreness(B):
-    A = B.copy()
-    n = nm.shape(A)[0]
-    kcore = {1: n}
-    u = nm.ones((1, n))
-
-    deg = nm.ravel(u * A)
-    for v in range(2, int(max(deg)) + 1):
-        pruning = True
-        while pruning:
-            pruning = False
-            for i in range(n):
-                if deg[i] > 0 and deg[i] < v:
-                    A[:, i] = nm.zeros((n, 1))
-                    A[i, :] = nm.zeros((1, n))
-                    pruning = True
-            deg = nm.ravel(u * A)
-            kcore[v] = 0
-            for i in range(n):
-                if deg[i] > 0:
-                    kcore[v] += 1
-    return kcore
-
-
-def get_degree_betweeness(A):
-    degbet = {}
-    n = nm.shape(A)[0]
-    G = nx.from_numpy_matrix(A)
-    degs = nx.degree(G)
-    bws = nx.betweenness_centrality(G)
-
-    for d in range(1, int(max(degs.values())) + 1):
-        degbet[d] = 0
-        s = 0
-        for i in range(n):
-            if degs[i] == d:
-                degbet[d] += bws[i]
-                s += 1
-        if degbet[d] > 0:
-            degbet[d] /= s
-
-    return degbet
-
-
-def correlation(d1, d2):
-    data1 = nm.ravel(d1).copy()
-    data2 = nm.ravel(d2).copy()
-    le = max(len(data1), len(data2))
-    data1.resize((le,))
-    data2.resize((le,))
-    return stats.pearsonr(data1, data2)[0]
-
-
-def all_pairs_shortest_path_length(A):
-    n = nm.shape(A)[0]
-    B = nm.eye(n)
-    path = {}
-
-    for k in range(n):
-        B = B * A
-        for i in range(n):
-            for j in range(i + 1, n):
-                if B[i, j] and ((i, j) not in path):
-                    path[(i, j)] = k + 1
-    return path
-
-
-def node_distance_dist(A):
-    n = nm.shape(A)[0]
-    path_lengths = csg.shortest_path(A, unweighted=True)
-
-    dist = {}
-    for i in range(n):
-        for j in range(i + 1, n):
-            k = path_lengths[i, j]
-            if k <= n:
-                if k in dist:
-                    dist[k] += 1
-                else:
-                    dist[k] = 1.
-
-    for k in dist:
-        dist[k] /= n * (n - 1) / 2.
-
-    return dist
-
-
-def node_distance_dist_old(A):
-    n = nm.shape(A)[0]
-    G = nx.from_numpy_matrix(A)
-    path_lengths = nx.all_pairs_shortest_path_length(G)
-
-    dist = {}
-    for i in range(n):
-        for j in range(i + 1, n):
-            if j in path_lengths[i]:
-                k = path_lengths[i][j]
-                if k in dist:
-                    dist[k] += 1
-                else:
-                    dist[k] = 1.
-
-    for k in dist:
-        dist[k] /= n * (n - 1) / 2.
-
-    return dist
-
-
-def correlate_dist_dict(d1, d2):
-    if len(d1) > 0 and len(d2) == 0:
-        return 0
-    if len(d1) == 0 and len(d2) > 0:
-        return 0
-    if len(d1) == 0 and len(d2) == 0:
-        return 1
-
-    minv = min(min(d1), min(d2))
-    maxv = max(max(d1), max(d2))
-    n = int(maxv - minv + 1)
-    v1 = nm.zeros((n, 1))
-    v2 = nm.zeros((n, 1))
-
-    for v in d1:
-        v1[int(v - minv)] = d1[v]
-    for v in d2:
-        v2[int(v - minv)] = d2[v]
-
-    return correlation(v1, v2)
-
-
-def sorted_correlation(l1, l2):
-    n = max(len(l1), len(l2))
-    v1 = nm.zeros((n, 1))
-    v2 = nm.zeros((n, 1))
-
-    el1 = nm.argsort(l1)
-    el2 = nm.argsort(l2)
-    for i in range(len(el1)):
-        v1[i] = l1[i]
-    for i in range(len(el2)):
-        v2[i] = l2[i]
-
-    return correlation(v1, v2)
-
-
-def simm_matrix_2_graph(A, names=None):
-    n = nm.shape(A)[0]
-    G = nx.Graph()
-    for i in range(n):
-        if names:
-            G.add_node(names[i])
-        else:
-            G.add_node(i)
-        for j in range(i, n):
-            if A[i, j]:
-                if names:
-                    G.add_edge(names[i], names[j])
-                else:
-                    G.add_edge(i, j)
-    return G
-
-
-def inv_map(d):
-    i = {}
-    for k, v in d.iteritems():
-        if v in i:
-            i[v] += [k]
-        else:
-            i[v] = [k]
-    return i
-
-
-def correlate_modularity(G, H):
-    g = community.best_partition(G)
-    h = community.best_partition(H)
-    g = inv_map(g)
-    h = inv_map(h)
-    g = {k: len(v) for k, v in g.iteritems()}
-    h = {k: len(v) for k, v in h.iteritems()}
-    return correlate_dist_dict(g, h)
-
-
-def ilogit(x):
-    ''' inverse of the logit function '''
-    return nm.exp(x) / (1 + nm.exp(x))
-
-
-def logistic(x):
-    return 1. / (1 + nm.exp((0.5-x)*6))
-
-
-def truncate(x):
-    if x < 0:
-        return 0
-    if x > 1:
-        return 1
     return x
 
 
-def mateify(B):
-    n = nm.shape(B)[0]
-    one = nm.ones((1, n))
-    neighs = nm.ravel(one * B)
+def truncate_value(l, precision):
+    j = 0
+    while ((10**j) * precision) < 1:
+        j += 1
+    return round(l, j)
+
+
+def good_solution(sol, x, s, goal, precision):
+    tot = s
+    debug("evaluating " + str(sol))
+    for i in sol:
+        tot += x.item(i)
+    debug("tot: " + str(tot) + ", goal: " + str(goal))
+    if abs(tot - goal) <= precision:
+        return 1
+    return 0
+
+
+def select_neighbours_factorial(s, free, x, goal):
+    not_found = 1
+    i = 1
+
+    while not_found and i <= len(free):
+        for sol in its.combinations(free, i):
+            if good_solution(sol, x, s, goal, 0.0001):
+                not_found = 0
+                break
+        i += 1
+
+    if not_found:
+        return []
+    else:
+        debug("Found: " + str(sol))
+        return sol
+
+
+def select_neighbours(s, free, x, goal, precision, k):
+    debug("Free: " + str(x[free, :]))
+    debug("Goal: " + str(goal-s))
+    debug("Neigh: " + str(k))
+    sel = []
+    if k >= 0:
+        sel = ssum.gssum(x[free, :], goal - s, precision, k)
+    debug(sel)
+    sel = [free[int(v)] for v in sel]
+    debug("Sum: " + str(sum(x[sel, :])))
+    return sel
+
+
+def build_matrix(x, l, precision):
+    return generate_matrix(x, l*x, precision)
+
+
+def generate_matrix(x, b, precision, degrees=None):
+    '''
+    Generate a random matrix A such that A*x = b up to a given precision.
+    Both x and b must be numpy vectors.
+    '''
+    n = max(x.shape)
+    nodes = range(n)
+    A = nm.zeros((n, n))
+    one = nm.ones(n)
+
+    next_node_i = 1
+    if degrees is None:
+        nodes = nm.array(nodes)
+    else:
+        nodes = nm.argsort(degrees)
+    for node in nodes:
+        debug("node " + str(node))
+        value = float(nm.dot(A[node, :], x))
+        num_neighs = 0
+        if degrees is not None:
+            num_neighs = degrees[node] - nm.dot(A[node, :], one)
+            if num_neighs == 0:
+                num_neighs = -1
+
+        debug("free " + str(nodes[next_node_i:]))
+        neigh = nodes[next_node_i:].copy()
+        rnd.shuffle(neigh)
+        neigh = select_neighbours(value, neigh,
+                                  x, float(b[node]), precision, num_neighs)
+        for i in neigh:
+            A[node, i] = 1
+        A[:, node] = A[node, :]
+        debug("neighbourhood " + str(A[node, :]))
+        next_node_i += 1
+
+    return nm.matrix(A)
+
+
+def octave_print(A):
+    for i in range(A.shape[0]):
+        for j in range(A.shape[1]):
+            sys.stdout.write(str(A[i, j]) + " ")
+        sys.stdout.write(";")
+    print ""
+
+
+def load_centrality():
+    # A = nm.matrix("0 1 0 0 0 0; 1 0 1 0 0 0; 0 1 0 1 0 0; 0 0 1 0 1 1;\
+    #               0 0 0 1 0 0; 0 0 0 1 0 0")
+    with open("jazz.edges", "r") as net:
+        G = nx.read_weighted_edgelist(net)
+    fig = plt.figure()
+
+    nx.draw(G)
+    fig.savefig("given_graph.png")
+    print "Average clustering:" + str(nx.average_clustering(G))
+    plt.show()
+
+    info("Generating the matrix..")
+    A = nx.to_numpy_matrix(G)
+    info("Computing the centrality..")
+    x, l = eigen_centrality(A)
+    return x, l
+
+
+def print_graph(G):
+    plt.figure()
+    nx.draw(G)
+    plt.show()
+
+
+def sample_simm_matrix(A, level, sorteigs=True):
+    d, V = nm.linalg.eigh(A)
+    n = len(d)
+    if sorteigs:
+        k = nm.argsort(nm.abs(d))
+    else:
+        k = range(n)
+    B = nm.zeros(nm.shape(A))
+
+    for i in range(1, level + 1):
+        B += d[k[n-i]] * V[:, k[n-i]] * nm.transpose(V[:, k[n-i]])
+
+    B -= nm.min(B)
+    nm.fill_diagonal(B, nm.zeros((1, n)))
+    B /= nm.max(B)
+
+    for i in range(n-1):
+        B[i, i+1:] = stats.bernoulli.rvs(B[i, i+1:],
+                                         random_state=nm.random.RandomState())
+        B[i+1:, i] = B[i, i+1:]
+
+    return nm.matrix(B)
+
+#
+# def mat_spect_approx(A, level, sorteigs=True, reverse=False, absolute=True):
+#     d, V = nm.linalg.eigh(A)
+#     d = nm.ravel(d)
+#     n = len(d)
+#     if sorteigs:
+#         if absolute:
+#             k = nm.argsort(nm.abs(d))
+#         else:
+#             k = nm.argsort(d)
+#         # ordered from the lowest to the highest
+#     else:
+#         k = range(n)
+#     if not reverse:
+#         k = nm.flipud(k)
+#
+#     z = nm.zeros((n, 1))
+#     for i in range(level, n):
+#         V[:, k[i]] = z
+#
+#     B = V*nm.diag(d)*nm.transpose(V)
+#     return B
+
+def deriv(A, level,rand_n, sorteigs=True, reverse=False, absolute=True):
+    ####caculate the derivation of the first part of f(x)
+    d, V = nm.linalg.eigh(A)
+    d = nm.ravel(d)
+    n = len(d)
+    c_values=nm.zeros(n)
     for i in range(n):
-        if neighs[i] == 0:
-            j = random.randint(0, n - 1)
-            B[i, j] = 1
-            B[j, i] = 1
+        x=d[i]
+        c_values[i]=int(1/(x+rand_n))
+        #c_values[i] = int((x+rand_n)*(x+rand_n))
+    c_values.sort()
+    sum=0
+    d_values=c_values[n/8:7*n/8]
+    for j in range(len(d_values)):
+        sum+=d_values[j]
+    avg=sum/(len(d_values))
+    return 1-avg
+
+def mat_spect_approx(A, level, sorteigs=True, reverse=False, absolute=True):
+    d, V = nm.linalg.eigh(A)
+    d = nm.ravel(d)
+    n = len(d)
+    b_Evalues = nm.zeros(n)
+    rand_n = random.random()
+    a=deriv(A, level,rand_n, sorteigs=True, reverse=False, absolute=True)
+    for i in range(n):
+        x = d[i]
+        b_Evalues[i] = a*x+int(math.log(abs(float(x)+rand_n),math.e))# a random polynomial
+        #b_Evalues[i] = 1.08*x+int(math.log(abs(x+0.1),math.e))# a random polynomial
+        #b_Evalues[i] = x
+        #b_Evalues[i]=a*x+1/(x+rand_n)
+    B = V * nm.diag(b_Evalues) * nm.linalg.inv(V)
 
 
-def connect_components(H):
-    groups = sorted(nx.connected_components(H), key=len, reverse=True)
-
-    while len(groups) > 1:
-        w = {i: len(groups[i]) for i in range(len(groups))}
-        k = random.randint(0, len(groups) - 1)
-        r = dict(w)
-        del(r[k])
-        tot_prob = float(sum(r.values()))
-        c = nm.random.choice(r.keys(), 1, p=[v/tot_prob for v in r.values()])[0]
-
-        i = random.sample(groups[k], 1)[0]
-        j = random.sample(groups[c], 1)[0]
-        H.add_edge(i, j)
-
-        groups[k] = groups[k].union(groups[c])
-        del groups[c]
-        w[k] += w[c]
-        del w[c]
+    return B
 
 
-def norm_modularity(G, part=None):
-    if not part:
-        part = community.best_partition(G)
-    degs = G.degree()
-    m = len(G.edges())
-
-    mod_map = {}
-    for k, v in part.iteritems():
-        mod_map[v] = mod_map.get(v, [])
-        mod_map[v].append(k)
-
-    s = 0
-    intra_edge = 0
-    for v, nodes in mod_map.iteritems():
-        for i in range(len(nodes)-1):
-            for j in range(i+1, len(nodes)):
-                s += degs[nodes[i]]*degs[nodes[j]]/(2.*m)
-                if G[nodes[i]].get(nodes[j], None) is not None:
-                    intra_edge += 1
-
-    return (intra_edge - s)/(m - s), len(mod_map.keys())
 
 
-def community_size(G):
-    part = community.best_partition(G)
-    sizes = {}
-    for k in part:
-        sizes[part[k]] = sizes.get(part[k], 0) + 1
-    return sizes.values()
 
+# def mat_spect_approx (A, level, sorteigs=True, reverse=False, absolute=True):
+#
+#     d, V = nm.linalg.eigh(A)
+#     d = nm.ravel(d)
+#     n = len(d)
+#     b_Evalues= nm.zeros(n)
+#     for i in range(n):
+#         x = d[i]
+#         #b_Evalues[i] = -(x*x)+2*x+5  #a random polynomial
+#         b_Evalues[i] = 2*x+5  #a random polynomial
+#
+#     #b_EigenValues=nm.diag(b_Evalues)
+#     B = V*nm.diag(b_Evalues)*nm.transpose(V)
+#     return B
+# def mat_spect_approx (A, level, sorteigs=True, reverse=False, absolute=True):
+#
+#     d, V = nm.linalg.eigh(A)
+#     d = nm.ravel(d)
+#     n = len(d)
+#     b_Evalues= nm.zeros(n)
+#     for i in range(n):
+#         x = d[i]
+#         b_Evalues[i] = 2*x  #a random polynomial
+#         P,T = linalg.schur(A)
+#
+#         b_EigenValues=nm.diag(b_Evalues)
+#         B = P * b_EigenValues * nm.linalg.inv(P)
+#         d_b, V_b = nm.linalg.eigh(B)
+#
+#     return B
+
+
+def sample_simm_matrix2(A, level, sorteigs=True):
+    if level == 0:
+        level = 1
+    n = min(A.shape)
+    B = mat_spect_approx(A, level, sorteigs, absolute=True)
+    print nx.to_numpy_matrix(B)
+
+    nm.fill_diagonal(B, nm.zeros((1, n)))
+    # B -= nm.min(B)
+    # B /= nm.max(B)
+    B = nm.vectorize(scaling_fun, otypes=[nm.float])(B)
+    nm.fill_diagonal(B, nm.zeros((1, n)))
+
+    for i in range(n-1):
+        B[i, i+1:] = stats.bernoulli.rvs(B[i, i+1:],
+                                         random_state=nm.random.RandomState())
+        B[i+1:, i] = nm.transpose(B[i, i+1:])
+
+    return nm.matrix(B)
+
+
+def modularity_clone_matrix(A, level):
+    n = A.shape[1]
+    K = nm.ones((1, n)) * A
+    B = A - nm.transpose(K) * K / float(sum(nm.ravel(K)))
+    B = mat_spect_approx(B, level, sorteigs=True, absolute=True)
+    B = B + nm.transpose(K) *  K / float(sum(nm.ravel(K)))
+
+
+    nm.fill_diagonal(B, nm.zeros((1, n)))
+    # B -= nm.min(B)
+    # B /= nm.max(B)
+    B = nm.vectorize(scaling_fun, otypes=[nm.float])(B)
+    nm.fill_diagonal(B, nm.zeros((1, n)))
+
+    for i in range(n-1):
+        B[i, i+1:] = stats.bernoulli.rvs(B[i, i+1:])  # ,
+        # random_state=nm.random.RandomState())
+        B[i+1:, i] = nm.transpose(B[i, i+1:])
+
+    return nm.matrix(B)
+
+
+def laplacian_clone_matrix(A, level):
+    if level == 0:
+        level = 1
+    n = A.shape[1]
+    K = nm.ravel(nm.ones((1, n)) * A)
+    L = nm.diag(K) - A
+    L = mat_spect_approx(L, level, reverse=True, absolute=True)
+
+    nm.fill_diagonal(L, nm.zeros((1, n)))
+    L = -L
+    L -= nm.min(L)
+    L /= nm.max(L)
+    # L = nm.vectorize(gu.ilogit, otypes=[nm.float])(L)
+    nm.fill_diagonal(L, nm.zeros((1, n)))
+
+    for i in range(n-1):
+        L[i, i+1:] = stats.bernoulli.rvs(L[i, i+1:],
+                                         random_state=nm.random.RandomState())
+        L[i+1:, i] = nm.transpose(L[i, i+1:])
+
+    return nm.matrix(L)
+
+
+def modspec_clone_matrix(A, level):
+    if level == 0:
+        level = 1
+    n = A.shape[1]
+    K = nm.ones((1, n)) * A
+    B = A - nm.transpose(K) * K / float(sum(nm.ravel(K)))
+    B = mat_spect_approx(B, level, absolute=False)
+
+    B = (B + nm.transpose(K) * K / float(sum(nm.ravel(K))))
+    B += mat_spect_approx(A, level, absolute=True)
+
+    L = nm.diag(K) - A
+    L = mat_spect_approx(L, level, reverse=False, absolute=False)
+    B += nm.diag(K) - L
+
+    nm.fill_diagonal(B, nm.zeros((1, n)))
+    # B -= nm.min(B)
+    # B /= nm.max(B)
+    B = nm.vectorize(scaling_fun, otypes=[nm.float])(B)
+    nm.fill_diagonal(B, nm.zeros((1, n)))
+
+    for i in range(n-1):
+        B[i, i+1:] = stats.bernoulli.rvs(B[i, i+1:],
+                                         random_state=nm.random.RandomState())
+        B[i+1:, i] = nm.transpose(B[i, i+1:])
+
+    return nm.matrix(B)
+
+
+def franky_clone_matrix(A, level):
+    n = A.shape[1]
+    K = nm.ones((1, n)) * A
+
+    B = A - nm.transpose(K) * K / float(sum(nm.ravel(K)))
+    B = mat_spect_approx(B, 1)
+    B = (B + nm.transpose(K) * K / float(sum(nm.ravel(K))))
+
+    L = nm.diag(K) - A
+    L = mat_spect_approx(L, level, reverse=True)
+    nm.fill_diagonal(L, nm.zeros((1, n)))
+    L = -L
+
+    B = B + L + mat_spect_approx(A, 1)
+
+    nm.fill_diagonal(B, nm.zeros((1, n)))
+    B -= nm.min(B)
+    B /= nm.max(B)
+    nm.fill_diagonal(B, nm.zeros((1, n)))
+
+    for i in range(n-1):
+        B[i, i+1:] = stats.bernoulli.rvs(B[i, i+1:],
+                                         random_state=nm.random.RandomState())
+        B[i+1:, i] = nm.transpose(B[i, i+1:])
+
+    return nm.matrix(B)
+
+
+def synthetic_modularity_matrix(A, eps):
+    n = A.shape[1]
+    K = nm.ones((1, n)) * A
+
+    B = A - nm.transpose(K) * K / float(sum(nm.ravel(K)))
+    x, l = leading_eigenvector(B)
+    b = nm.transpose(K) * (K * x) / float(sum(nm.ravel(K))) + l * x
+
+    return generate_matrix(x, nm.ravel(b), eps, nm.ravel(K))
+
+
+def modularity_clone_graph(G, m=0.9):
+    names = G.nodes()
+    A = nx.to_numpy_matrix(G, nodelist=names)
+    n = nm.shape(A)[0]
+    B = modularity_clone_matrix(A, int(round(n*m)))
+    H = gu.simm_matrix_2_graph(B, names)
+    return H
+
+if __name__ == "__main__":
+    __eigen_info = True
+    __eigen_debug = True
+    info("Loading data..")
+    G = nx.karate_club_graph()
+    A = nx.to_numpy_matrix(G)
+    B = synthetic_modularity_matrix(A, 0.0001)
+    print "****************************"
+    print B
+    print "****************************"
+    print A-B
